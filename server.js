@@ -9,22 +9,18 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // 初始化数据库（使用内存数据库，因为 Serverless 环境不支持文件持久化）
-const db = new sqlite3.Database(':memory:', (err) => {
-  if (err) {
-    console.error('数据库连接失败:', err.message);
-  } else {
-    console.log('数据库连接成功');
-    db.run(`CREATE TABLE IF NOT EXISTS tasks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      content TEXT,
-      remind_time TEXT NOT NULL,
-      status TEXT DEFAULT 'pending',
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      pushed_at TEXT
-    )`);
-  }
-});
+const db = new sqlite3.Database(':memory:');
+
+// 创建表（同步方式，确保表存在）
+db.run(`CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  content TEXT,
+  remind_time TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  pushed_at TEXT
+)`);
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -508,6 +504,12 @@ cron.schedule(config.check_interval, () => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`服务运行在 http://localhost:${port}`);
-});
+// Vercel Serverless 环境需要导出应用
+module.exports = app;
+
+// 只有在本地运行时才监听端口
+if (require.main === module) {
+  app.listen(port, () => {
+    console.log(`服务运行在 http://localhost:${port}`);
+  });
+}
