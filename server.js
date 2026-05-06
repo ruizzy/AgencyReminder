@@ -8,8 +8,8 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// 初始化数据库（异步方式）
-const db = new sqlite3.Database('reminder.db', (err) => {
+// 初始化数据库（使用内存数据库，因为 Serverless 环境不支持文件持久化）
+const db = new sqlite3.Database(':memory:', (err) => {
   if (err) {
     console.error('数据库连接失败:', err.message);
   } else {
@@ -280,6 +280,7 @@ async function callLLM(taskText) {
     // 验证并修复 remind_time 格式
     if (result.remind_time) {
       let remindTime;
+      const now = new Date();
       
       // 如果是纯时间格式（如 "21:08" 或 "8:00"），需要结合当前/目标日期
       if (/^\d{1,2}:\d{2}$/.test(result.remind_time)) {
@@ -287,37 +288,45 @@ async function callLLM(taskText) {
         remindTime = parseChineseTime(taskText); // 使用后备解析获取正确日期
         remindTime.setHours(hours, minutes, 0, 0);
       } else {
+        // 尝试解析LLM返回的日期
         remindTime = new Date(result.remind_time);
+        
+        // 验证时间是否有效
+        if (isNaN(remindTime.getTime())) {
+          console.warn('LLM返回的时间格式无效，使用默认解析:', result.remind_time);
+          return extractTaskInfo(taskText);
+        }
+        
+        // 获取本地解析的日期（确保日期正确）
+        const localDate = parseChineseTime(taskText);
+        
+        // 使用LLM的时间部分，但日期部分使用本地解析的结果（确保日期正确性）
+        const llmHours = remindTime.getHours();
+        const llmMinutes = remindTime.getMinutes();
+        const llmSeconds = remindTime.getSeconds();
+        
+        remindTime = new Date(
+          localDate.getFullYear(),
+          localDate.getMonth(),
+          localDate.getDate(),
+          llmHours,
+          llmMinutes,
+          llmSeconds
+        );
       }
       
-      // 验证时间是否有效
+      // 验证最终时间是否有效
       if (isNaN(remindTime.getTime())) {
-        console.warn('LLM返回的时间格式无效，使用默认解析:', result.remind_time);
+        console.warn('最终时间解析失败，使用默认解析');
         return extractTaskInfo(taskText);
       }
       
-      // 如果时间在过去，调整年份到最近的有效年份
-      const now = new Date();
+      // 如果时间在过去，调整到明天
       if (remindTime < now) {
-        // 保留原始的月日时分秒，只调整年份
-        const targetYear = now.getFullYear();
-        const targetMonth = remindTime.getMonth();
-        const targetDay = remindTime.getDate();
-        const targetHours = remindTime.getHours();
-        const targetMinutes = remindTime.getMinutes();
-        const targetSeconds = remindTime.getSeconds();
-        
-        let adjustedTime = new Date(targetYear, targetMonth, targetDay, targetHours, targetMinutes, targetSeconds);
-        
-        // 如果调整后仍然在过去，设置到下一年
-        if (adjustedTime < now) {
-          adjustedTime = new Date(targetYear + 1, targetMonth, targetDay, targetHours, targetMinutes, targetSeconds);
-        }
-        
-        result.remind_time = adjustedTime.toISOString();
-      } else {
-        result.remind_time = remindTime.toISOString();
+        remindTime.setDate(remindTime.getDate() + 1);
       }
+      
+      result.remind_time = remindTime.toISOString();
     } else {
       result.remind_time = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     }
