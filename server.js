@@ -1,27 +1,33 @@
 require('dotenv').config();
 const express = require('express');
-const Database = require('better-sqlite3');
+const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 const axios = require('axios');
 const path = require('path');
 
 const app = express();
-const db = new Database('reminder.db');
+const port = process.env.PORT || 3000;
+
+// 初始化数据库（异步方式）
+const db = new sqlite3.Database('reminder.db', (err) => {
+  if (err) {
+    console.error('数据库连接失败:', err.message);
+  } else {
+    console.log('数据库连接成功');
+    db.run(`CREATE TABLE IF NOT EXISTS tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      content TEXT,
+      remind_time TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      pushed_at TEXT
+    )`);
+  }
+});
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    content TEXT,
-    remind_time TEXT NOT NULL,
-    status TEXT DEFAULT 'pending',
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    pushed_at TEXT
-  )
-`);
 
 const config = {
   llm_api_url: process.env.LLM_API_URL || 'https://api.siliconflow.cn/v1/chat/completions',
@@ -86,6 +92,7 @@ function parseChineseTime(text) {
       // 应用时间
       targetDate.setHours(hours, minutes, seconds, 0);
     }
+    
     console.log('解析结果(具体日期):', targetDate.toISOString());
     console.log('=========================================');
     return targetDate;
@@ -142,32 +149,14 @@ function parseChineseTime(text) {
       }
     }
   }
-  console.log('解析后时间: hours=', hours, 'minutes=', minutes);
   
-  // 根据中文时段调整小时
+  // 根据时段调整小时
   if (text.includes('晚上') || text.includes('夜里') || text.includes('深夜')) {
-    if (hours >= 1 && hours < 12) {
-      hours += 12;
-    } else if (hours === 0) {
-      hours = 24;
-    }
+    if (hours >= 1 && hours < 12) hours += 12;
   } else if (text.includes('下午') || text.includes('午后')) {
-    if (hours >= 1 && hours < 12) {
-      hours += 12;
-    }
+    if (hours >= 1 && hours < 12) hours += 12;
   } else if (text.includes('早上') || text.includes('上午')) {
-    if (hours >= 12) {
-      hours -= 12;
-    }
-  }
-  console.log('时段调整后: hours=', hours);
-  
-  // 验证小时范围
-  if (hours < 0 || hours > 24) {
-    hours = now.getHours();
-  }
-  if (minutes < 0 || minutes >= 60) {
-    minutes = 0;
+    if (hours >= 12) hours -= 12;
   }
   
   const result = new Date();
@@ -221,48 +210,42 @@ function extractTaskInfo(text) {
 }
 
 async function callLLM(taskText) {
-  if (!config.llm_api_url) {
+  if (!config.llm_api_key) {
     console.log('LLM API URL 未配置，使用默认提取');
     return extractTaskInfo(taskText);
   }
-
+  
   try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (config.llm_api_key) {
-      headers['Authorization'] = `Bearer ${config.llm_api_key}`;
-    }
-
+    console.log('========== LLM API 请求 ==========');
+    console.log('URL:', config.llm_api_url);
+    console.log('Headers:', {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + config.llm_api_key.slice(0, 10) + '...'
+    });
+    
     const requestData = {
       model: config.llm_model,
       messages: [{
         role: 'user',
-        content: `请从以下文本中提取任务信息，直接返回JSON格式，不要用markdown代码块包裹。
-
-日期时间解析规则：
-1. 日期表达："今天"=今天，"明天"=明天，"后天"=后天，"大后天"=第三天，"明天的明天"=后天；
-2. 时段规则："早上"=6-12点，"上午"=6-12点，"中午"=11-13点，"下午"=12-18点，"晚上"=18-24点，"夜里"=18-24点，"深夜"=22-24点；
-3. 时间格式："X点Y分"如"10点30分"=10:30，"X点"如"3点"=15:00（需结合时段判断）；
-4. 如果日期已过则自动调整到最近的有效日期。
-
-格式要求：{"title":"任务标题(不超过30字)","content":"任务内容","remind_time":"提醒时间(ISO 8601格式，如果未明确指定则默认当前时间+10分钟)"}。
-
-文本：${taskText}`
+        content: `请从以下文本中提取任务信息，直接返回JSON格式，不要用markdown代码块包裹。\n\n日期时间解析规则：\n1. 日期表达："今天"=今天，"明天"=明天，"后天"=后天，"大后天"=第三天，"明天的明天"=后天；\n2. 时段规则："早上"=6-12点，"上午"=6-12点，"中午"=11-13点，"下午"=12-18点，"晚上"=18-24点，"夜里"=18-24点，"深夜"=22-24点；\n3. 时间格式："X点Y分"如"10点30分"=10:30，"X点"如"3点"=15:00（需结合时段判断）；\n4. 如果日期已过则自动调整到最近的有效日期。\n\n格式要求：{"title":"任务标题(不超过30字)","content":"任务内容","remind_time":"提醒时间(ISO 8601格式，如果未明确指定则默认当前时间+10分钟)"}。\n\n文本：${taskText}`
       }],
       temperature: 0.7
     };
     
-    console.log('========== LLM API 请求 ==========');
-    console.log('URL:', config.llm_api_url);
-    console.log('Headers:', JSON.stringify(headers, null, 2));
-    console.log('Request:', JSON.stringify(requestData, null, 2));
-
-    const response = await axios.post(config.llm_api_url, requestData, { headers });
-
+    console.log('Request:', JSON.stringify(requestData, null, 2).slice(0, 500) + '...');
+    
+    const response = await axios.post(config.llm_api_url, requestData, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + config.llm_api_key
+      }
+    });
+    
     console.log('---------- LLM API 响应 ----------');
     console.log('Status:', response.status);
     console.log('Response:', JSON.stringify(response.data, null, 2));
     console.log('================================');
-
+    
     let content = response.data.choices[0].message.content;
     
     // 清理 markdown 代码块
@@ -339,11 +322,6 @@ async function callLLM(taskText) {
       result.remind_time = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     }
     
-    // 修复 content 字段
-    if (!result.content || result.content.length < 5) {
-      result.content = taskText;
-    }
-    
     return result;
   } catch (error) {
     console.error('LLM调用失败，使用默认提取:', error.message);
@@ -351,139 +329,7 @@ async function callLLM(taskText) {
   }
 }
 
-async function pushToWeChat(task) {
-  if (!config.wechat_webhook_url) {
-    console.log('企信Webhook未配置，跳过推送');
-    return false;
-  }
-
-  try {
-    const requestData = {
-      msgtype: 'text',
-      text: {
-        content: `⏰ 任务提醒\n\n📌 ${task.title}\n📝 ${task.content}\n⏱️ 提醒时间：${new Date(task.remind_time).toLocaleString('zh-CN')}`
-      }
-    };
-    
-    console.log('========== 企信推送请求 ==========');
-    console.log('URL:', config.wechat_webhook_url);
-    console.log('Request:', JSON.stringify(requestData, null, 2));
-
-    const response = await axios.post(config.wechat_webhook_url, requestData);
-
-    console.log('---------- 企信推送响应 ----------');
-    console.log('Status:', response.status);
-    console.log('Response:', JSON.stringify(response.data, null, 2));
-    console.log('=================================');
-    return true;
-  } catch (error) {
-    console.error('========== 企信推送失败 ==========');
-    console.error('Error:', error.message);
-    if (error.response) {
-      console.error('Status:', error.response.status);
-      console.error('Response:', JSON.stringify(error.response.data, null, 2));
-    }
-    console.error('================================');
-    return false;
-  }
-}
-
-function checkAndPushTasks() {
-  const now = new Date();
-  const tasks = db.prepare('SELECT * FROM tasks WHERE status = ?').all('pending');
-
-  tasks.forEach(task => {
-    const remindTime = new Date(task.remind_time);
-    const diff = remindTime.getTime() - now.getTime();
-
-    if (diff <= 10 * 60 * 1000 && diff > 0) {
-      pushToWeChat(task).then(success => {
-        if (success) {
-          db.prepare('UPDATE tasks SET status = ?, pushed_at = ? WHERE id = ?')
-            .run('completed', new Date().toISOString(), task.id);
-        }
-      });
-    }
-  });
-}
-
-cron.schedule(config.check_interval, checkAndPushTasks);
-
-app.post('/api/tasks', async (req, res) => {
-  try {
-    const { text } = req.body;
-    if (!text) {
-      return res.status(400).json({ error: '任务文本不能为空' });
-    }
-
-    const taskInfo = await callLLM(text);
-
-    const stmt = db.prepare('INSERT INTO tasks (title, content, remind_time) VALUES (?, ?, ?)');
-    const result = stmt.run(taskInfo.title, taskInfo.content, taskInfo.remind_time);
-
-    res.json({
-      success: true,
-      data: {
-        id: result.lastInsertRowid,
-        ...taskInfo
-      }
-    });
-  } catch (error) {
-    console.error('创建任务失败:', error);
-    res.status(500).json({ error: '创建任务失败' });
-  }
-});
-
-app.get('/api/tasks', (req, res) => {
-  try {
-    const { status } = req.query;
-    let tasks;
-    if (status) {
-      tasks = db.prepare('SELECT * FROM tasks WHERE status = ? ORDER BY remind_time DESC').all(status);
-    } else {
-      tasks = db.prepare('SELECT * FROM tasks ORDER BY remind_time DESC').all();
-    }
-    res.json({ success: true, data: tasks });
-  } catch (error) {
-    console.error('获取任务失败:', error);
-    res.status(500).json({ error: '获取任务失败' });
-  }
-});
-
-app.delete('/api/tasks/:id', (req, res) => {
-  try {
-    const { id } = req.params;
-    db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
-    res.json({ success: true });
-  } catch (error) {
-    console.error('删除任务失败:', error);
-    res.status(500).json({ error: '删除任务失败' });
-  }
-});
-
-app.post('/api/tasks/:id/push', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
-
-    if (!task) {
-      return res.status(404).json({ error: '任务不存在' });
-    }
-
-    const success = await pushToWeChat(task);
-    if (success) {
-      db.prepare('UPDATE tasks SET status = ?, pushed_at = ? WHERE id = ?')
-        .run('completed', new Date().toISOString(), id);
-      res.json({ success: true });
-    } else {
-      res.status(500).json({ error: '推送失败，请检查企信Webhook配置' });
-    }
-  } catch (error) {
-    console.error('推送任务失败:', error);
-    res.status(500).json({ error: '推送任务失败' });
-  }
-});
-
+// 获取配置信息
 app.get('/api/config', (req, res) => {
   res.json({
     has_llm_key: !!config.llm_api_key,
@@ -491,7 +337,168 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 任务提醒服务已启动: http://localhost:${PORT}`);
+// 获取任务列表（支持状态筛选）
+app.get('/api/tasks', (req, res) => {
+  const status = req.query.status;
+  
+  let sql, params;
+  if (status === 'pending') {
+    sql = 'SELECT * FROM tasks WHERE status = "pending" ORDER BY remind_time ASC';
+    params = [];
+  } else if (status === 'completed') {
+    sql = 'SELECT * FROM tasks WHERE status = "pushed" ORDER BY pushed_at DESC';
+    params = [];
+  } else {
+    sql = 'SELECT * FROM tasks ORDER BY status ASC, remind_time ASC';
+    params = [];
+  }
+  
+  db.all(sql, params, (err, rows) => {
+    if (err) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+    res.json({ success: true, data: rows });
+  });
+});
+
+// 添加任务（异步）
+app.post('/api/tasks', async (req, res) => {
+  try {
+    const { text, content } = req.body;
+    const taskText = text || content;
+    const taskInfo = await callLLM(taskText);
+    
+    db.run(
+      'INSERT INTO tasks (title, content, remind_time) VALUES (?, ?, ?)',
+      [taskInfo.title, taskInfo.content, taskInfo.remind_time],
+      function(err) {
+        if (err) {
+          return res.status(500).json({ success: false, error: err.message });
+        }
+        res.json({ success: true, id: this.lastID, ...taskInfo });
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 获取待推送任务
+app.get('/api/tasks/pending', (req, res) => {
+  db.all('SELECT * FROM tasks WHERE status = "pending" ORDER BY remind_time ASC', (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(rows);
+  });
+});
+
+// 获取已推送任务
+app.get('/api/tasks/pushed', (req, res) => {
+  db.all('SELECT * FROM tasks WHERE status = "pushed" ORDER BY pushed_at DESC', (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(rows);
+  });
+});
+
+// 删除任务
+app.delete('/api/tasks/:id', (req, res) => {
+  db.run('DELETE FROM tasks WHERE id = ?', [req.params.id], function(err) {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json({ deleted: this.changes > 0 });
+  });
+});
+
+// 手动推送任务
+app.post('/api/tasks/:id/push', (req, res) => {
+  db.get('SELECT * FROM tasks WHERE id = ?', [req.params.id], async (err, task) => {
+    if (err || !task) {
+      return res.status(404).json({ error: '任务不存在' });
+    }
+    
+    try {
+      await sendWechatMessage(task);
+      db.run('UPDATE tasks SET status = "pushed", pushed_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+async function sendWechatMessage(task) {
+  const webhookUrl = config.wechat_webhook_url;
+  if (!webhookUrl) {
+    console.log('企信Webhook未配置，跳过推送');
+    return;
+  }
+  
+  const message = {
+    msgtype: 'text',
+    text: {
+      content: `⏰ 任务提醒\n\n📌 ${task.title}\n📝 ${task.content}\n⏱ 提醒时间：${formatTime(task.remind_time)}`
+    }
+  };
+  
+  try {
+    console.log('========== 企信推送请求 ==========');
+    console.log('URL:', webhookUrl);
+    console.log('Request:', JSON.stringify(message));
+    
+    const response = await axios.post(webhookUrl, message);
+    
+    console.log('---------- 企信推送响应 ----------');
+    console.log('Status:', response.status);
+    console.log('Response:', JSON.stringify(response.data));
+    console.log('=================================');
+  } catch (error) {
+    console.error('========== 企信推送失败 ==========');
+    console.error('Error:', error.message);
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Response:', JSON.stringify(error.response.data));
+    }
+    console.log('=================================');
+    throw error;
+  }
+}
+
+function formatTime(timeStr) {
+  const date = new Date(timeStr);
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
+
+// 定时检查任务
+cron.schedule(config.check_interval, () => {
+  const now = new Date();
+  
+  db.all('SELECT * FROM tasks WHERE status = "pending"', (err, tasks) => {
+    if (err) return;
+    
+    tasks.forEach(task => {
+      const taskTime = new Date(task.remind_time);
+      const pushTime = new Date(taskTime.getTime() - 10 * 60 * 1000);
+      
+      if (pushTime <= now && pushTime > new Date(now.getTime() - 60 * 1000)) {
+        sendWechatMessage(task).then(() => {
+          db.run('UPDATE tasks SET status = "pushed", pushed_at = CURRENT_TIMESTAMP WHERE id = ?', [task.id]);
+        }).catch(console.error);
+      }
+    });
+  });
+});
+
+app.listen(port, () => {
+  console.log(`服务运行在 http://localhost:${port}`);
 });
