@@ -1,36 +1,380 @@
-const axios = require('axios');
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日常工作待办提醒</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
 
-const apiKey = 'sk-uaqfruxihvethytbdxopnljjzevypciepuhcmsgjjykerqdk';
-const apiUrl = 'https://api.siliconflow.cn/v1/chat/completions';
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
 
-async function testAPI() {
-  console.log('测试硅基流动 API...\n');
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
 
-  try {
-    const response = await axios.post(apiUrl, {
-      model: 'Qwen/Qwen2.5-7B-Instruct',
-      messages: [{
-        role: 'user',
-        content: 'Hello, just say "API works!" in Chinese'
-      }],
-      temperature: 0.7
-    }, {
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
+    h1 {
+      color: white;
+      text-align: center;
+      margin-bottom: 30px;
+      font-size: 2rem;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+    }
+
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    textarea {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 16px;
+      resize: vertical;
+      min-height: 100px;
+      font-family: inherit;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .btn {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-danger {
+      background: #ff4757;
+      color: white;
+      padding: 6px 12px;
+      font-size: 14px;
+    }
+
+    .btn-danger:hover {
+      background: #ff3344;
+    }
+
+    .btn-push {
+      background: #28a745;
+      color: white;
+      padding: 6px 12px;
+      font-size: 14px;
+      margin-right: 8px;
+    }
+
+    .btn-push:hover {
+      background: #218838;
+    }
+
+    .btn-push:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .task-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .tab {
+      padding: 10px 20px;
+      border: none;
+      background: #e0e0e0;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.3s ease;
+    }
+
+    .tab.active {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .task-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .task-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 16px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      border-left: 4px solid #667eea;
+    }
+
+    .task-item.completed {
+      border-left-color: #28a745;
+      opacity: 0.7;
+    }
+
+    .task-info h3 {
+      font-size: 16px;
+      margin-bottom: 6px;
+      color: #333;
+    }
+
+    .task-info p {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 4px;
+    }
+
+    .task-meta {
+      font-size: 12px;
+      color: #999;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-left: 8px;
+    }
+
+    .status-pending {
+      background: #fff3cd;
+      color: #856404;
+    }
+
+    .status-completed {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #999;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #666;
+    }
+
+    .config-info {
+      font-size: 12px;
+      color: #999;
+      margin-top: 10px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>⏰ 日常工作待办提醒</h1>
+
+    <div class="card">
+      <div class="input-group">
+        <textarea id="taskInput" placeholder="输入待办事项，例如：明天下午3点要开会讨论项目进度，记得提前准备材料"></textarea>
+        <button class="btn btn-primary" onclick="createTask()">添加待办</button>
+      </div>
+      <div class="config-info" id="configInfo"></div>
+    </div>
+
+    <div class="card">
+      <div class="tabs">
+        <button class="tab active" onclick="filterTasks('all')">全部</button>
+        <button class="tab" onclick="filterTasks('pending')">待推送</button>
+        <button class="tab" onclick="filterTasks('completed')">已推送</button>
+      </div>
+      <div id="taskList" class="task-list">
+        <div class="loading">加载中...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentFilter = 'all';
+
+    async function loadConfig() {
+      try {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        const info = [];
+        if (!data.has_llm_key) info.push('⚠️ 未配置 LLM API Key');
+        if (!data.has_wechat_webhook) info.push('⚠️ 未配置企信 Webhook');
+        if (data.has_llm_key && data.has_wechat_webhook) info.push('✅ 功能已完整配置');
+        document.getElementById('configInfo').textContent = info.join(' | ');
+      } catch (e) {
+        console.error('加载配置失败', e);
       }
-    });
+    }
 
-    console.log('✅ API 调用成功！');
-    console.log('\n模型响应:');
-    console.log(response.data.choices[0].message.content);
-    console.log('\n完整响应:');
-    console.log(JSON.stringify(response.data, null, 2));
-  } catch (error) {
-    console.error('❌ API 调用失败！');
-    console.error('错误状态码:', error.response?.status);
-    console.error('错误信息:', error.response?.data || error.message);
-  }
-}
+    async function createTask() {
+      const input = document.getElementById('taskInput');
+      const text = input.value.trim();
 
-testAPI();
+      if (!text) {
+        alert('请输入待办事项');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+          input.value = '';
+          loadTasks();
+          alert('待办已创建！');
+        } else {
+          alert('创建失败：' + data.error);
+        }
+      } catch (e) {
+        alert('创建失败：' + e.message);
+      }
+    }
+
+    async function loadTasks() {
+      const list = document.getElementById('taskList');
+      list.innerHTML = '<div class="loading">加载中...</div>';
+
+      try {
+        const url = currentFilter === 'all'
+          ? '/api/tasks'
+          : `/api/tasks?status=${currentFilter}`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.success && data.data.length === 0) {
+          list.innerHTML = '<div class="empty-state">暂无任务</div>';
+          return;
+        }
+
+        list.innerHTML = data.data.map(task => `
+          <div class="task-item ${task.status}">
+            <div class="task-info">
+              <h3>
+                ${escapeHtml(task.title)}
+                <span class="status-badge status-${task.status}">
+                  ${task.status === 'pending' ? '待推送' : '已推送'}
+                </span>
+              </h3>
+              <p>${escapeHtml(task.content)}</p>
+              <div class="task-meta">
+                📅 提醒时间：${new Date(task.remind_time).toLocaleString('zh-CN')}
+                ${task.status === 'pending' ? ' | ⏰ 预计推送：' + new Date(new Date(task.remind_time).getTime() - 10 * 60 * 1000).toLocaleString('zh-CN') : ''}
+                ${task.pushed_at ? ' | ✅ 已推送：' + new Date(task.pushed_at).toLocaleString('zh-CN') : ''}
+              </div>
+            </div>
+            <div class="task-actions">
+              ${task.status === 'pending' ? `<button class="btn btn-push" onclick="pushTask(${task.id})">推送</button>` : ''}
+              <button class="btn btn-danger" onclick="deleteTask(${task.id})">删除</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        list.innerHTML = '<div class="empty-state">加载失败</div>';
+      }
+    }
+
+    async function deleteTask(id) {
+      if (!confirm('确定要删除这个任务吗？')) return;
+
+      try {
+        await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+        loadTasks();
+      } catch (e) {
+        alert('删除失败');
+      }
+    }
+
+    async function pushTask(id) {
+      try {
+        const btn = event.target;
+        btn.disabled = true;
+        btn.textContent = '推送中...';
+
+        const res = await fetch(`/api/tasks/${id}/push`, { method: 'POST' });
+        const data = await res.json();
+
+        if (data.success) {
+          loadTasks();
+        } else {
+          alert('推送失败：' + data.error);
+          btn.disabled = false;
+          btn.textContent = '推送';
+        }
+      } catch (e) {
+        alert('推送失败：' + e.message);
+      }
+    }
+
+    function filterTasks(status) {
+      currentFilter = status;
+      document.querySelectorAll('.tab').forEach(tab => {
+        tab.classList.toggle('active', tab.textContent.includes(
+          status === 'all' ? '全部' : status === 'pending' ? '待推送' : '已推送'
+        ));
+      });
+      loadTasks();
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    loadConfig();
+    loadTasks();
+    setInterval(loadTasks, 30000);
+  </script>
+</body>
+</html>
