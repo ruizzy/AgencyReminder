@@ -333,8 +333,9 @@
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         recognition = new SpeechRecognition();
         recognition.lang = 'zh-CN';
-        recognition.continuous = true;
+        recognition.continuous = false;
         recognition.interimResults = true;
+        recognition.maxAlternatives = 1;
 
         recognition.onstart = function() {
           isRecording = true;
@@ -348,21 +349,30 @@
             transcript += event.results[i][0].transcript;
           }
           document.getElementById('taskInput').value = transcript;
+          
+          if (event.results[event.results.length - 1].isFinal) {
+            stopRecording();
+          }
         };
 
         recognition.onerror = function(event) {
           console.error('语音识别错误:', event.error);
+          isRecording = false;
+          updateVoiceBtn(false);
           if (event.error === 'not-allowed') {
-            alert('请允许麦克风权限以使用语音输入功能');
+            showVoiceStatus('请允许麦克风权限', false);
+          } else if (event.error === 'no-speech') {
+            showVoiceStatus('未检测到语音输入', false);
           } else {
-            alert('语音识别出错: ' + event.error);
+            showVoiceStatus('语音识别出错: ' + event.error, false);
           }
-          stopRecording();
         };
 
         recognition.onend = function() {
           if (isRecording) {
-            recognition.start();
+            isRecording = false;
+            updateVoiceBtn(false);
+            showVoiceStatus('语音输入已停止', false);
           }
         };
       } else {
@@ -380,23 +390,33 @@
     }
 
     function startRecording() {
+      if (isRecording) {
+        return;
+      }
       if (!recognition) {
         initVoiceRecognition();
       }
       try {
+        isRecording = true;
         recognition.start();
       } catch (e) {
+        isRecording = false;
         alert('无法启动语音识别: ' + e.message);
       }
     }
 
     function stopRecording() {
-      if (recognition && isRecording) {
-        isRecording = false;
-        recognition.stop();
-        updateVoiceBtn(false);
-        showVoiceStatus('语音输入已停止', false);
+      if (!isRecording || !recognition) {
+        return;
       }
+      isRecording = false;
+      try {
+        recognition.stop();
+      } catch (e) {
+        console.error('停止录音失败:', e);
+      }
+      updateVoiceBtn(false);
+      showVoiceStatus('语音输入已停止', false);
     }
 
     function updateVoiceBtn(isRecording) {
