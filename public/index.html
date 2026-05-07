@@ -327,58 +327,15 @@
     let currentFilter = 'all';
     let recognition = null;
     let isRecording = false;
+    let recognitionStarted = false;
 
     function initVoiceRecognition() {
-      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognition = new SpeechRecognition();
-        recognition.lang = 'zh-CN';
-        recognition.continuous = false;
-        recognition.interimResults = true;
-        recognition.maxAlternatives = 1;
-
-        recognition.onstart = function() {
-          isRecording = true;
-          updateVoiceBtn(true);
-          showVoiceStatus('录音中...', true);
-        };
-
-        recognition.onresult = function(event) {
-          let transcript = '';
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            transcript += event.results[i][0].transcript;
-          }
-          document.getElementById('taskInput').value = transcript;
-          
-          if (event.results[event.results.length - 1].isFinal) {
-            stopRecording();
-          }
-        };
-
-        recognition.onerror = function(event) {
-          console.error('语音识别错误:', event.error);
-          isRecording = false;
-          updateVoiceBtn(false);
-          if (event.error === 'not-allowed') {
-            showVoiceStatus('请允许麦克风权限', false);
-          } else if (event.error === 'no-speech') {
-            showVoiceStatus('未检测到语音输入', false);
-          } else {
-            showVoiceStatus('语音识别出错: ' + event.error, false);
-          }
-        };
-
-        recognition.onend = function() {
-          if (isRecording) {
-            isRecording = false;
-            updateVoiceBtn(false);
-            showVoiceStatus('语音输入已停止', false);
-          }
-        };
-      } else {
-        document.getElementById('voiceBtn').disabled = true;
-        document.getElementById('voiceBtn').title = '浏览器不支持语音识别';
-      }
+      document.getElementById('voiceBtn').disabled = false;
+      document.getElementById('voiceBtn').title = '语音输入';
+    }
+    
+    async function isCapacitorEnv() {
+      return typeof window !== 'undefined' && window.Capacitor !== undefined && window.Capacitor.isNativePlatform !== undefined && window.Capacitor.isNativePlatform();
     }
 
     function toggleVoiceRecognition() {
@@ -389,32 +346,88 @@
       }
     }
 
-    function startRecording() {
+    let webRecognition = null;
+    
+    async function startRecording() {
       if (isRecording) {
         return;
       }
-      if (!recognition) {
-        initVoiceRecognition();
-      }
+      isRecording = true;
+      updateVoiceBtn(true);
+      showVoiceStatus('录音中...点击停止', true);
+      
       try {
-        isRecording = true;
-        recognition.start();
+        if (await isCapacitorEnv()) {
+          window.Capacitor.Plugins.VoiceRecognition.start({
+            language: 'zh-CN',
+            maxResults: 1
+          }).then(function(result) {
+            if (result && result.matches && result.matches.length > 0) {
+              document.getElementById('taskInput').value = result.matches[0];
+            }
+          }).catch(function(e) {
+            console.error('语音识别错误:', e);
+          });
+        } else {
+          const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+          if (SpeechRecognition) {
+            webRecognition = new SpeechRecognition();
+            webRecognition.lang = 'zh-CN';
+            webRecognition.continuous = true;
+            webRecognition.interimResults = true;
+            
+            webRecognition.onresult = function(event) {
+              let transcript = '';
+              for (let i = event.resultIndex; i < event.results.length; i++) {
+                transcript += event.results[i][0].transcript;
+              }
+              document.getElementById('taskInput').value = transcript;
+            };
+            
+            webRecognition.onerror = function(event) {
+              console.error('Web语音识别错误:', event.error);
+            };
+            
+            webRecognition.onend = function() {
+              if (isRecording) {
+                webRecognition.start();
+              }
+            };
+            
+            webRecognition.start();
+          } else {
+            throw new Error('浏览器不支持语音识别');
+          }
+        }
       } catch (e) {
-        isRecording = false;
-        alert('无法启动语音识别: ' + e.message);
+        console.error('语音识别失败:', e);
+        alert('语音识别失败: ' + e.message);
       }
     }
 
-    function stopRecording() {
-      if (!isRecording || !recognition) {
+    async function stopRecording() {
+      if (!isRecording) {
         return;
       }
       isRecording = false;
-      try {
-        recognition.stop();
-      } catch (e) {
-        console.error('停止录音失败:', e);
+      
+      if (webRecognition) {
+        try {
+          webRecognition.stop();
+          webRecognition = null;
+        } catch (e) {
+          console.error('停止录音失败:', e);
+        }
       }
+      
+      if (await isCapacitorEnv()) {
+        try {
+          await window.Capacitor.Plugins.VoiceRecognition.stop();
+        } catch (e) {
+          console.error('停止原生录音失败:', e);
+        }
+      }
+      
       updateVoiceBtn(false);
       showVoiceStatus('语音输入已停止', false);
     }
