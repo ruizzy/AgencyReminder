@@ -2,7 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#667eea">
+  <link rel="manifest" href="manifest.json">
   <title>日常工作待办提醒</title>
   <style>
     * {
@@ -208,6 +210,86 @@
       margin-top: 10px;
       text-align: center;
     }
+
+    .voice-btn {
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .voice-btn.start {
+      background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+      color: white;
+    }
+
+    .voice-btn.start:hover {
+      transform: scale(1.1);
+      box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4);
+    }
+
+    .voice-btn.recording {
+      background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%);
+      color: white;
+      animation: pulse 1s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+    }
+
+    .voice-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      animation: none;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .input-row textarea {
+      flex: 1;
+    }
+
+    .voice-status {
+      font-size: 12px;
+      color: #666;
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .voice-status.recording {
+      color: #dc3545;
+    }
+
+    .voice-status .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #28a745;
+    }
+
+    .voice-status.recording .dot {
+      background: #dc3545;
+      animation: blink 1s ease-in-out infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
   </style>
 </head>
 <body>
@@ -216,7 +298,14 @@
 
     <div class="card">
       <div class="input-group">
-        <textarea id="taskInput" placeholder="输入待办事项，例如：明天下午3点要开会讨论项目进度，记得提前准备材料"></textarea>
+        <div class="input-row">
+          <textarea id="taskInput" placeholder="输入待办事项，例如：明天下午3点要开会讨论项目进度，记得提前准备材料"></textarea>
+          <button id="voiceBtn" class="voice-btn start" onclick="toggleVoiceRecognition()" title="语音输入">🎤</button>
+        </div>
+        <div id="voiceStatus" class="voice-status" style="display: none;">
+          <span class="dot"></span>
+          <span id="voiceText">语音输入已就绪</span>
+        </div>
         <button class="btn btn-primary" onclick="createTask()">添加待办</button>
       </div>
       <div class="config-info" id="configInfo"></div>
@@ -236,6 +325,111 @@
 
   <script>
     let currentFilter = 'all';
+    let recognition = null;
+    let isRecording = false;
+
+    function initVoiceRecognition() {
+      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        recognition = new SpeechRecognition();
+        recognition.lang = 'zh-CN';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        recognition.onstart = function() {
+          isRecording = true;
+          updateVoiceBtn(true);
+          showVoiceStatus('录音中...', true);
+        };
+
+        recognition.onresult = function(event) {
+          let transcript = '';
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            transcript += event.results[i][0].transcript;
+          }
+          document.getElementById('taskInput').value = transcript;
+        };
+
+        recognition.onerror = function(event) {
+          console.error('语音识别错误:', event.error);
+          if (event.error === 'not-allowed') {
+            alert('请允许麦克风权限以使用语音输入功能');
+          } else {
+            alert('语音识别出错: ' + event.error);
+          }
+          stopRecording();
+        };
+
+        recognition.onend = function() {
+          if (isRecording) {
+            recognition.start();
+          }
+        };
+      } else {
+        document.getElementById('voiceBtn').disabled = true;
+        document.getElementById('voiceBtn').title = '浏览器不支持语音识别';
+      }
+    }
+
+    function toggleVoiceRecognition() {
+      if (isRecording) {
+        stopRecording();
+      } else {
+        startRecording();
+      }
+    }
+
+    function startRecording() {
+      if (!recognition) {
+        initVoiceRecognition();
+      }
+      try {
+        recognition.start();
+      } catch (e) {
+        alert('无法启动语音识别: ' + e.message);
+      }
+    }
+
+    function stopRecording() {
+      if (recognition && isRecording) {
+        isRecording = false;
+        recognition.stop();
+        updateVoiceBtn(false);
+        showVoiceStatus('语音输入已停止', false);
+      }
+    }
+
+    function updateVoiceBtn(isRecording) {
+      const btn = document.getElementById('voiceBtn');
+      if (isRecording) {
+        btn.classList.remove('start');
+        btn.classList.add('recording');
+        btn.innerHTML = '⏹️';
+      } else {
+        btn.classList.remove('recording');
+        btn.classList.add('start');
+        btn.innerHTML = '🎤';
+      }
+    }
+
+    function showVoiceStatus(text, isRecording) {
+      const status = document.getElementById('voiceStatus');
+      const textEl = document.getElementById('voiceText');
+      
+      if (!text) {
+        status.style.display = 'none';
+        return;
+      }
+      
+      status.style.display = 'flex';
+      textEl.textContent = text;
+      
+      if (isRecording) {
+        status.classList.add('recording');
+      } else {
+        status.classList.remove('recording');
+      }
+    }
 
     async function loadConfig() {
       try {
@@ -374,6 +568,7 @@
 
     loadConfig();
     loadTasks();
+    initVoiceRecognition();
     setInterval(loadTasks, 30000);
   </script>
 </body>

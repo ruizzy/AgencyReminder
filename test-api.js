@@ -1,28 +1,36 @@
-const http = require('http');
+const axios = require('axios');
 
-const options = {
-  hostname: 'localhost',
-  port: 4000,
-  path: '/api/tasks',
-  method: 'GET'
-};
+const apiKey = 'sk-uaqfruxihvethytbdxopnljjzevypciepuhcmsgjjykerqdk';
+const apiUrl = 'https://api.siliconflow.cn/v1/chat/completions';
 
-const req = http.request(options, (res) => {
-  console.log('状态码:', res.statusCode);
-  console.log('响应头:', res.headers);
-  
-  let data = '';
-  res.on('data', (chunk) => {
-    data += chunk;
-  });
-  
-  res.on('end', () => {
-    console.log('响应体:', data);
-  });
-});
+async function testAPI() {
+  console.log('测试硅基流动 API...\n');
 
-req.on('error', (e) => {
-  console.error('请求遇到问题:', e.message);
-});
+  try {
+    const response = await axios.post(apiUrl, {
+      model: 'Qwen/Qwen2.5-7B-Instruct',
+      messages: [{
+        role: 'user',
+        content: 'Hello, just say "API works!" in Chinese'
+      }],
+      temperature: 0.7
+    }, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
 
-req.end();
+    console.log('✅ API 调用成功！');
+    console.log('\n模型响应:');
+    console.log(response.data.choices[0].message.content);
+    console.log('\n完整响应:');
+    console.log(JSON.stringify(response.data, null, 2));
+  } catch (error) {
+    console.error('❌ API 调用失败！');
+    console.error('错误状态码:', error.response?.status);
+    console.error('错误信息:', error.response?.data || error.message);
+  }
+}
+
+testAPI();

@@ -1,0 +1,9 @@
+{
+  "appId": "com.example.reminder",
+  "appName": "agency-reminder",
+  "webDir": "public",
+  "server": {
+    "url": "http://47.250.132.119/",
+    "androidScheme": "http"
+  }
+}

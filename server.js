@@ -1,26 +1,117 @@
 require('dotenv').config();
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 const axios = require('axios');
 const path = require('path');
+const fs = require('fs').promises;
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3001;
 
-// 初始化数据库（使用内存数据库，因为 Serverless 环境不支持文件持久化）
-const db = new sqlite3.Database(':memory:');
+// 数据存储文件路径
+const DATA_FILE = 'reminder.json';
 
-// 创建表（同步方式，确保表存在）
-db.run(`CREATE TABLE IF NOT EXISTS tasks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
-  content TEXT,
-  remind_time TEXT NOT NULL,
-  status TEXT DEFAULT 'pending',
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  pushed_at TEXT
-)`);
+// 内存数据缓存
+let tasks = [];
+let nextId = 1;
+
+// 初始化数据存储
+async function initDataStore() {
+  try {
+    const data = await fs.readFile(DATA_FILE, 'utf8');
+    const parsed = JSON.parse(data);
+    tasks = parsed.tasks || [];
+    nextId = parsed.nextId || 1;
+    console.log('数据加载成功，共 ' + tasks.length + ' 条记录');
+  } catch (err) {
+    console.log('数据文件不存在，创建新存储');
+    tasks = [];
+    nextId = 1;
+    await saveData();
+  }
+}
+
+// 保存数据到文件
+async function saveData() {
+  await fs.writeFile(DATA_FILE, JSON.stringify({ tasks, nextId }, null, 2));
+}
+
+// 模拟数据库操作
+const db = {
+  all: async function(sql, params, callback) {
+    try {
+      let results = [...tasks];
+      
+      // 解析简单的 SQL 查询
+      if (sql.includes('WHERE status = "pending"')) {
+        results = results.filter(t => t.status === 'pending');
+      } else if (sql.includes('WHERE status = "pushed"')) {
+        results = results.filter(t => t.status === 'pushed');
+      }
+      
+      if (sql.includes('ORDER BY remind_time ASC')) {
+        results.sort((a, b) => new Date(a.remind_time) - new Date(b.remind_time));
+      } else if (sql.includes('ORDER BY pushed_at DESC')) {
+        results.sort((a, b) => new Date(b.pushed_at) - new Date(a.pushed_at));
+      } else if (sql.includes('ORDER BY status ASC')) {
+        results.sort((a, b) => (a.status === 'pending' ? 0 : 1) - (b.status === 'pending' ? 0 : 1));
+      }
+      
+      callback(null, results);
+    } catch (err) {
+      callback(err, null);
+    }
+  },
+  
+  get: async function(sql, params, callback) {
+    try {
+      const id = params[0];
+      const task = tasks.find(t => t.id === parseInt(id));
+      callback(null, task);
+    } catch (err) {
+      callback(err, null);
+    }
+  },
+  
+  run: async function(sql, params, callback) {
+    try {
+      if (sql.includes('INSERT INTO tasks')) {
+        const [title, content, remind_time] = params;
+        const newTask = {
+          id: nextId++,
+          title,
+          content,
+          remind_time,
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          pushed_at: null
+        };
+        tasks.push(newTask);
+        await saveData();
+        callback(null, { lastID: newTask.id });
+      } else if (sql.includes('UPDATE tasks SET status = "pushed"')) {
+        const id = params[0];
+        const task = tasks.find(t => t.id === parseInt(id));
+        if (task) {
+          task.status = 'pushed';
+          task.pushed_at = new Date().toISOString();
+          await saveData();
+        }
+        callback(null);
+      } else if (sql.includes('DELETE FROM tasks')) {
+        const id = params[0];
+        const initialLength = tasks.length;
+        tasks = tasks.filter(t => t.id !== parseInt(id));
+        await saveData();
+        callback(null, { changes: initialLength - tasks.length });
+      } else {
+        callback(null);
+      }
+    } catch (err) {
+      callback(err);
+    }
+  }
+};
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -43,7 +134,6 @@ function parseChineseTime(text) {
   let minutes = now.getMinutes();
   let seconds = 0;
   
-  // 解析具体日期 "X月Y日" 格式（直接使用中文汉字）
   const dateMatch = text.match(/(\d{1,2})月(\d{1,2})日?/);
   console.log('具体日期匹配:', dateMatch);
   console.log('日期匹配类型:', dateMatch ? '成功' : '失败');
@@ -52,21 +142,16 @@ function parseChineseTime(text) {
     const targetDay = parseInt(dateMatch[2]);
     
     const currentYear = now.getFullYear();
-    // 默认设置为早上8点
     let targetDate = new Date(currentYear, targetMonth - 1, targetDay, 8, 0, 0);
     
-    // 如果日期已过，设置到下一年
     if (targetDate < now) {
       targetDate = new Date(currentYear + 1, targetMonth - 1, targetDay, 8, 0, 0);
     }
     
-    // 解析时间 "X点Y分" 格式
     const timeFullMatch = text.match(/(\d{1,2})点(\d{1,2})分?/);
-    // 解析时间 "X点" 格式
     const timeSimpleMatch = text.match(/(\d{1,2})点(?!\d)/);
     console.log('完整时间匹配:', timeFullMatch, '简单时间匹配:', timeSimpleMatch);
     
-    // 只有找到时间才更新，否则保持默认的8点
     if (timeFullMatch || timeSimpleMatch) {
       if (timeFullMatch) {
         hours = parseInt(timeFullMatch[1]);
@@ -76,7 +161,6 @@ function parseChineseTime(text) {
         minutes = 0;
       }
       
-      // 根据时段调整小时
       if (text.includes('晚上') || text.includes('夜里') || text.includes('深夜')) {
         if (hours >= 1 && hours < 12) hours += 12;
       } else if (text.includes('下午') || text.includes('午后')) {
@@ -85,7 +169,6 @@ function parseChineseTime(text) {
         if (hours >= 12) hours -= 12;
       }
       
-      // 应用时间
       targetDate.setHours(hours, minutes, seconds, 0);
     }
     
@@ -94,7 +177,6 @@ function parseChineseTime(text) {
     return targetDate;
   }
   
-  // 解析日期偏移（支持复合表达如"明天的明天"）
   const tomorrowCount = (text.match(/明天/g) || []).length;
   const yesterdayCount = (text.match(/昨天/g) || []).length;
   
@@ -115,28 +197,24 @@ function parseChineseTime(text) {
   }
   console.log('日期偏移:', daysOffset);
   
-  // 优先匹配 "X点Y分" 格式
   const timeMatch = text.match(/(\d{1,2})[\u70B9\u7089](\d{1,2})[\u5206]?/);
   console.log('时间匹配(X点Y分):', timeMatch);
   if (timeMatch) {
     hours = parseInt(timeMatch[1]);
     minutes = parseInt(timeMatch[2]);
   } else {
-    // 匹配 "X点" 格式（直接使用中文点字）
     const hourMatch = text.match(/(\d{1,2})点/);
     console.log('小时匹配(X点):', hourMatch);
     if (hourMatch) {
       hours = parseInt(hourMatch[1]);
       minutes = 0;
     } else {
-      // 尝试其他格式
       const hourMatch2 = text.match(/(\d{1,2})[\u70B9]/);
       console.log('小时匹配(Unicode点):', hourMatch2);
       if (hourMatch2) {
         hours = parseInt(hourMatch2[1]);
         minutes = 0;
       } else {
-        // 匹配 "X分" 格式（只有分钟）
         const minuteMatch = text.match(/(\d{1,2})[\u5206]/);
         console.log('分钟匹配:', minuteMatch);
         if (minuteMatch) {
@@ -146,7 +224,6 @@ function parseChineseTime(text) {
     }
   }
   
-  // 根据时段调整小时
   if (text.includes('晚上') || text.includes('夜里') || text.includes('深夜')) {
     if (hours >= 1 && hours < 12) hours += 12;
   } else if (text.includes('下午') || text.includes('午后')) {
@@ -158,7 +235,6 @@ function parseChineseTime(text) {
   const result = new Date();
   console.log('初始日期:', result.toISOString());
   
-  // 应用日期偏移
   if (daysOffset !== 0) {
     result.setDate(result.getDate() + daysOffset);
     console.log('应用日期偏移后:', result.toISOString());
@@ -167,7 +243,6 @@ function parseChineseTime(text) {
   result.setHours(hours, minutes, seconds, 0);
   console.log('应用时间后:', result.toISOString());
   
-  // 如果没有指定日期偏移且时间已过，设置为明天
   if (daysOffset === 0 && result < now) {
     result.setDate(result.getDate() + 1);
     console.log('时间已过，调整到明天:', result.toISOString());
@@ -186,7 +261,6 @@ function extractTaskInfo(text) {
   console.log('解析结果:', remindTime.toISOString());
   console.log('=================================');
   
-  // 提取标题：移除日期时间相关的描述，保留核心任务内容
   let title = text
     .replace(/今天|明天|后天|大后天|前天|昨天/g, '')
     .replace(/早上|上午|中午|下午|晚上|夜里|深夜/g, '')
@@ -244,21 +318,16 @@ async function callLLM(taskText) {
     
     let content = response.data.choices[0].message.content;
     
-    // 清理 markdown 代码块
     content = content.replace(/```json|```json\s*|```/g, '').trim();
-    
-    // 尝试修复常见的 JSON 问题
-    content = content.replace(/([{,]\s*)'(\w+)'(\s*:)/g, '$1"$2"$3'); // 单引号转双引号
-    content = content.replace(/,\s*([\]}])/g, '$1'); // 移除尾部逗号
+    content = content.replace(/([{,]\s*)'(\w+)'(\s*:)/g, '$1"$2"$3');
+    content = content.replace(/,\s*([\]}])/g, '$1');
     
     let result;
     try {
       result = JSON.parse(content);
-      // 始终使用原始输入作为content，不使用LLM返回的简化版本
       result.content = taskText;
     } catch (parseError) {
       console.error('JSON解析失败，尝试修复并重新解析...');
-      // 如果解析失败，尝试用正则提取关键字段
       const titleMatch = content.match(/"title"\s*:\s*"([^"]+)"/);
       const timeMatch = content.match(/"remind_time"\s*:\s*"([^"]+)"/);
       
@@ -273,30 +342,23 @@ async function callLLM(taskText) {
       }
     }
     
-    // 验证并修复 remind_time 格式
     if (result.remind_time) {
       let remindTime;
       const now = new Date();
       
-      // 如果是纯时间格式（如 "21:08" 或 "8:00"），需要结合当前/目标日期
       if (/^\d{1,2}:\d{2}$/.test(result.remind_time)) {
         const [hours, minutes] = result.remind_time.split(':').map(Number);
-        remindTime = parseChineseTime(taskText); // 使用后备解析获取正确日期
+        remindTime = parseChineseTime(taskText);
         remindTime.setHours(hours, minutes, 0, 0);
       } else {
-        // 尝试解析LLM返回的日期
         remindTime = new Date(result.remind_time);
         
-        // 验证时间是否有效
         if (isNaN(remindTime.getTime())) {
           console.warn('LLM返回的时间格式无效，使用默认解析:', result.remind_time);
           return extractTaskInfo(taskText);
         }
         
-        // 获取本地解析的日期（确保日期正确）
         const localDate = parseChineseTime(taskText);
-        
-        // 使用LLM的时间部分，但日期部分使用本地解析的结果（确保日期正确性）
         const llmHours = remindTime.getHours();
         const llmMinutes = remindTime.getMinutes();
         const llmSeconds = remindTime.getSeconds();
@@ -311,13 +373,11 @@ async function callLLM(taskText) {
         );
       }
       
-      // 验证最终时间是否有效
       if (isNaN(remindTime.getTime())) {
         console.warn('最终时间解析失败，使用默认解析');
         return extractTaskInfo(taskText);
       }
       
-      // 如果时间在过去，调整到明天
       if (remindTime < now) {
         remindTime.setDate(remindTime.getDate() + 1);
       }
@@ -334,7 +394,6 @@ async function callLLM(taskText) {
   }
 }
 
-// 获取配置信息
 app.get('/api/config', (req, res) => {
   res.json({
     has_llm_key: !!config.llm_api_key,
@@ -342,23 +401,19 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-// 获取任务列表（支持状态筛选）
 app.get('/api/tasks', (req, res) => {
   const status = req.query.status;
   
-  let sql, params;
+  let sql;
   if (status === 'pending') {
     sql = 'SELECT * FROM tasks WHERE status = "pending" ORDER BY remind_time ASC';
-    params = [];
   } else if (status === 'completed') {
     sql = 'SELECT * FROM tasks WHERE status = "pushed" ORDER BY pushed_at DESC';
-    params = [];
   } else {
     sql = 'SELECT * FROM tasks ORDER BY status ASC, remind_time ASC';
-    params = [];
   }
   
-  db.all(sql, params, (err, rows) => {
+  db.all(sql, [], (err, rows) => {
     if (err) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -366,7 +421,6 @@ app.get('/api/tasks', (req, res) => {
   });
 });
 
-// 添加任务（异步）
 app.post('/api/tasks', async (req, res) => {
   try {
     const { text, content } = req.body;
@@ -380,7 +434,7 @@ app.post('/api/tasks', async (req, res) => {
         if (err) {
           return res.status(500).json({ success: false, error: err.message });
         }
-        res.json({ success: true, id: this.lastID, ...taskInfo });
+        res.json({ success: true, id: tasks.find(t => t.title === taskInfo.title)?.id || nextId - 1, ...taskInfo });
       }
     );
   } catch (error) {
@@ -388,9 +442,8 @@ app.post('/api/tasks', async (req, res) => {
   }
 });
 
-// 获取待推送任务
 app.get('/api/tasks/pending', (req, res) => {
-  db.all('SELECT * FROM tasks WHERE status = "pending" ORDER BY remind_time ASC', (err, rows) => {
+  db.all('SELECT * FROM tasks WHERE status = "pending" ORDER BY remind_time ASC', [], (err, rows) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -398,9 +451,8 @@ app.get('/api/tasks/pending', (req, res) => {
   });
 });
 
-// 获取已推送任务
 app.get('/api/tasks/pushed', (req, res) => {
-  db.all('SELECT * FROM tasks WHERE status = "pushed" ORDER BY pushed_at DESC', (err, rows) => {
+  db.all('SELECT * FROM tasks WHERE status = "pushed" ORDER BY pushed_at DESC', [], (err, rows) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -408,17 +460,15 @@ app.get('/api/tasks/pushed', (req, res) => {
   });
 });
 
-// 删除任务
 app.delete('/api/tasks/:id', (req, res) => {
   db.run('DELETE FROM tasks WHERE id = ?', [req.params.id], function(err) {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
-    res.json({ deleted: this.changes > 0 });
+    res.json({ deleted: tasks.filter(t => t.id === parseInt(req.params.id)).length === 0 });
   });
 });
 
-// 手动推送任务
 app.post('/api/tasks/:id/push', (req, res) => {
   db.get('SELECT * FROM tasks WHERE id = ?', [req.params.id], async (err, task) => {
     if (err || !task) {
@@ -484,14 +534,13 @@ function formatTime(timeStr) {
   });
 }
 
-// 定时检查任务
 cron.schedule(config.check_interval, () => {
   const now = new Date();
   
-  db.all('SELECT * FROM tasks WHERE status = "pending"', (err, tasks) => {
+  db.all('SELECT * FROM tasks WHERE status = "pending"', [], (err, pendingTasks) => {
     if (err) return;
     
-    tasks.forEach(task => {
+    pendingTasks.forEach(task => {
       const taskTime = new Date(task.remind_time);
       const pushTime = new Date(taskTime.getTime() - 10 * 60 * 1000);
       
@@ -504,12 +553,9 @@ cron.schedule(config.check_interval, () => {
   });
 });
 
-// Vercel Serverless 环境需要导出应用
-module.exports = app;
-
-// 只有在本地运行时才监听端口
-if (require.main === module) {
+// 启动时初始化数据存储
+initDataStore().then(() => {
   app.listen(port, () => {
     console.log(`服务运行在 http://localhost:${port}`);
   });
-}
+});
