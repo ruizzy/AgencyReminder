@@ -373,8 +373,13 @@
           };
           
           webRecognition.onerror = function(event) {
-            console.error('Web语音识别错误:', event.error);
-          };
+              console.error('Web语音识别错误:', event.error);
+              if (event.error === 'not-allowed') {
+                isRecording = false;
+                updateVoiceBtn(false);
+                showVoiceStatus('请在浏览器设置中允许麦克风权限', false);
+              }
+            };
           
           webRecognition.onend = function() {
             if (isRecording) {
@@ -394,7 +399,7 @@
       }
     }
 
-    async function stopRecording() {
+    function stopRecording() {
       if (!isRecording) {
         return;
       }
@@ -406,14 +411,6 @@
           webRecognition = null;
         } catch (e) {
           console.error('停止录音失败:', e);
-        }
-      }
-      
-      if (await isCapacitorEnv()) {
-        try {
-          await window.Capacitor.Plugins.VoiceRecognition.stop();
-        } catch (e) {
-          console.error('停止原生录音失败:', e);
         }
       }
       
